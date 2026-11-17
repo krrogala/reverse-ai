@@ -100,7 +100,12 @@ function renderEntry(entry) {
 
 function direction(plan) {
   if (plan.newTopic !== null) {
-    return `DIRECTION: You have lost interest in whatever came before. Your new subject: ${plan.newTopic}. Ask about it now, in your own words.`;
+    return [
+      `DIRECTION: You have lost interest in whatever came before. Your new subject: ${plan.newTopic}.`,
+      `Your situation: ${plan.complication}.`,
+      `What you want from the answer: ${plan.constraint}.`,
+      'Ask about it now, in your own words. Let the situation and the demand show in how you ask; you do not have to spell either out.',
+    ].join(' ');
   }
   return 'DIRECTION: Stay on the current subject and react to the latest response from Human-1.';
 }
@@ -108,7 +113,8 @@ function direction(plan) {
 /**
  * Renders a validated transcript as the prompt for the next "user" turn.
  * @param {object[]} transcript
- * @param {{ persona: string, newTopic: string | null }} plan from planTurn()
+ * @param {{ persona: string, newTopic: string | null, complication: string | null, constraint: string | null }} plan
+ *   from planTurn()
  */
 export function buildPrompt(transcript, plan) {
   const who = `Who you are this session: ${plan.persona}.`;

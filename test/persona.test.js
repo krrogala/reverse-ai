@@ -10,8 +10,13 @@ import {
 
 const asker = (text, extra = {}) => ({ role: 'asker', text, ...extra });
 const human = (text, extra = {}) => ({ role: 'human', text, ...extra });
-const staying = { persona: 'a pub-quiz obsessive', newTopic: null };
-const switching = { persona: 'a pub-quiz obsessive', newTopic: 'a squeaky door' };
+const staying = { persona: 'a pub-quiz obsessive', newTopic: null, complication: null, constraint: null };
+const switching = {
+  persona: 'a pub-quiz obsessive',
+  newTopic: 'a squeaky door',
+  complication: 'guests arrive in an hour',
+  constraint: 'you want a one-line answer',
+};
 
 test('validateTranscript accepts an empty transcript', () => {
   assert.deepEqual(validateTranscript([]), { ok: true, value: [] });
@@ -137,6 +142,14 @@ test('buildPrompt tells the user to stay or to change subject', () => {
   assert.match(move, /lost interest/);
   assert.match(move, /new subject: a squeaky door/);
   assert.match(move, /Who you are this session: a pub-quiz obsessive\./);
+});
+
+test('buildPrompt passes the complication and constraint only with a new subject', () => {
+  const move = buildPrompt([], switching);
+  assert.match(move, /guests arrive in an hour/);
+  assert.match(move, /you want a one-line answer/);
+  const stay = buildPrompt([asker('q'), human('a', { latencyMs: 1000, attempt: 1 })], staying);
+  assert.doesNotMatch(stay, /Your situation|What you want/);
 });
 
 test('the system prompt no longer lists example subjects for the model to latch onto', async () => {
