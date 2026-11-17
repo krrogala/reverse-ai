@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cleanSeed, planTurn, turnsAllowed } from '../src/director.js';
-import { PERSONAS, TOPICS } from '../src/topics.js';
+import { COMPLICATIONS, CONSTRAINTS, PERSONAS, TOPICS } from '../src/topics.js';
 
 const asker = (topicIndex) => ({ role: 'asker', text: 'q', topicIndex });
 const human = () => ({ role: 'human', text: 'a' });
@@ -85,4 +85,57 @@ test('the pools are large and free of duplicates', () => {
   assert.ok(TOPICS.length >= 90);
   assert.equal(new Set(TOPICS).size, TOPICS.length);
   assert.equal(new Set(PERSONAS).size, PERSONAS.length);
+  for (const pool of [COMPLICATIONS, CONSTRAINTS]) {
+    assert.ok(pool.length >= 40);
+    assert.equal(new Set(pool).size, pool.length);
+  }
+});
+
+test('a new topic comes with a complication and a constraint from the pools', () => {
+  const plan = planTurn([], 42);
+  assert.ok(COMPLICATIONS.includes(plan.complication));
+  assert.ok(CONSTRAINTS.includes(plan.constraint));
+});
+
+test('a turn that stays on the subject carries no complication or constraint', () => {
+  const staying = simulate(7, 30).filter((plan) => plan.newTopic === null);
+  assert.ok(staying.length > 0);
+  assert.ok(staying.every((plan) => plan.complication === null && plan.constraint === null));
+});
+
+test('the same subject is dressed differently across sessions and topics', () => {
+  const combos = new Set();
+  const complications = new Set();
+  const constraints = new Set();
+  for (let seed = 1; seed <= 300; seed += 1) {
+    for (const plan of simulate((seed * 2654435761) >>> 0, 12).filter((p) => p.newTopic !== null)) {
+      combos.add(`${plan.newTopic}|${plan.complication}|${plan.constraint}`);
+      complications.add(plan.complication);
+      constraints.add(plan.constraint);
+    }
+  }
+  assert.equal(complications.size, COMPLICATIONS.length);
+  assert.equal(constraints.size, CONSTRAINTS.length);
+  assert.ok(combos.size > 1000, `only ${combos.size} distinct combinations`);
+});
+
+test('the complication and constraint are not locked to each other', () => {
+  const pairs = new Set();
+  for (let seed = 0; seed < 2000; seed += 1) {
+    const plan = planTurn([], (seed * 2654435761) >>> 0);
+    pairs.add(`${plan.complication}|${plan.constraint}`);
+  }
+  assert.ok(pairs.size > 1000, `only ${pairs.size} distinct pairs`);
+});
+
+test('the picks are independent of how long the topic lasts', () => {
+  const lengthsByComplication = new Map();
+  for (let i = 0; i < 5000; i += 1) {
+    const seed = (i * 2654435761) >>> 0;
+    const { complication } = planTurn([], seed);
+    const lengths = lengthsByComplication.get(complication) ?? new Set();
+    lengthsByComplication.set(complication, lengths.add(turnsAllowed(seed, 0)));
+  }
+  assert.equal(lengthsByComplication.size, COMPLICATIONS.length);
+  assert.ok([...lengthsByComplication.values()].every((lengths) => lengths.size === 3));
 });

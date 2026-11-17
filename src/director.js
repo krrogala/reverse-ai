@@ -1,7 +1,7 @@
 // Decides, in code, who the user is this session and when they change the subject.
 // The model is good at playing a part and bad at being random, so the dice live here.
 
-import { PERSONAS, TOPICS } from './topics.js';
+import { COMPLICATIONS, CONSTRAINTS, PERSONAS, TOPICS } from './topics.js';
 
 const MIN_TURNS_ON_TOPIC = 2;
 const MAX_TURNS_ON_TOPIC = 4;
@@ -30,9 +30,18 @@ function shuffled(items, seed) {
   return result;
 }
 
+/** A dice stream that belongs to one topic of one session. */
+function topicDice(seed, topicIndex) {
+  return random((seed ^ Math.imul(topicIndex + 1, MIX)) >>> 0);
+}
+
+function pick(items, roll) {
+  return items[Math.floor(roll * items.length)];
+}
+
 /** How many user turns a given topic gets before the user loses interest. */
 export function turnsAllowed(seed, topicIndex) {
-  const roll = random((seed ^ Math.imul(topicIndex + 1, MIX)) >>> 0)();
+  const roll = topicDice(seed, topicIndex)();
   return MIN_TURNS_ON_TOPIC + Math.floor(roll * (MAX_TURNS_ON_TOPIC - MIN_TURNS_ON_TOPIC + 1));
 }
 
@@ -45,8 +54,9 @@ export function cleanSeed(value) {
  * Plans the user's next turn from a validated transcript.
  * @param {{ role: string, topicIndex?: number }[]} transcript
  * @param {number} seed per-session seed chosen by the browser
- * @returns {{ persona: string, topicIndex: number, newTopic: string | null }}
- *   newTopic is set when the user must open a new subject on this turn.
+ * @returns {{ persona: string, topicIndex: number, newTopic: string | null,
+ *   complication: string | null, constraint: string | null }}
+ *   newTopic, complication and constraint are set when the user must open a new subject on this turn.
  */
 export function planTurn(transcript, seed) {
   const persona = PERSONAS[seed % PERSONAS.length];
@@ -55,9 +65,17 @@ export function planTurn(transcript, seed) {
   const spent = askerTurns.filter((entry) => entry.topicIndex === current).length;
 
   const moveOn = current === -1 || spent >= turnsAllowed(seed, current);
-  if (!moveOn) return { persona, topicIndex: current, newTopic: null };
+  if (!moveOn) return { persona, topicIndex: current, newTopic: null, complication: null, constraint: null };
 
   const topicIndex = current + 1;
   const order = shuffled(TOPICS, seed);
-  return { persona, topicIndex, newTopic: order[topicIndex % order.length] };
+  const roll = topicDice(seed, topicIndex);
+  roll(); // the first roll of this stream is the topic's length, see turnsAllowed()
+  return {
+    persona,
+    topicIndex,
+    newTopic: order[topicIndex % order.length],
+    complication: pick(COMPLICATIONS, roll()),
+    constraint: pick(CONSTRAINTS, roll()),
+  };
 }
