@@ -10,6 +10,8 @@ import {
 
 const asker = (text, extra = {}) => ({ role: 'asker', text, ...extra });
 const human = (text, extra = {}) => ({ role: 'human', text, ...extra });
+const staying = { persona: 'a pub-quiz obsessive', newTopic: null };
+const switching = { persona: 'a pub-quiz obsessive', newTopic: 'a squeaky door' };
 
 test('validateTranscript accepts an empty transcript', () => {
   assert.deepEqual(validateTranscript([]), { ok: true, value: [] });
@@ -41,7 +43,7 @@ test('validateTranscript keeps only known fields with safe types', () => {
     human('no', { latencyMs: 4200.7, truncated: 1, attempt: 2, declined: false, evil: true }),
   ]);
   assert.deepEqual(result.value, [
-    { role: 'asker', text: 'fix my code', action: 'regenerate' },
+    { role: 'asker', text: 'fix my code', action: 'regenerate', topicIndex: 0 },
     { role: 'human', text: 'no', latencyMs: 4201, truncated: true, attempt: 2, declined: false },
   ]);
 });
@@ -54,14 +56,17 @@ test('validateTranscript defaults bad human metadata', () => {
 });
 
 test('buildPrompt asks for an opening prompt when the session is new', () => {
-  assert.match(buildPrompt([]), /opening prompt/i);
+  const prompt = buildPrompt([], switching);
+  assert.match(prompt, /opening prompt/i);
+  assert.match(prompt, /a pub-quiz obsessive/);
+  assert.match(prompt, /new subject: a squeaky door/);
 });
 
 test('buildPrompt renders the conversation with response metadata', () => {
   const prompt = buildPrompt([
     asker('what is the capital of australia'),
     human('Sydney', { latencyMs: 42000, truncated: true, attempt: 2, declined: false }),
-  ]);
+  ], staying);
   assert.match(prompt, /what is the capital of australia/);
   assert.match(prompt, /Sydney/);
   assert.match(prompt, /42s/);
@@ -74,7 +79,7 @@ test('buildPrompt marks regenerate clicks and refusals', () => {
     asker('write a haiku'),
     human('I cannot', { latencyMs: 1000, truncated: false, attempt: 1, declined: true }),
     asker('', { action: 'regenerate' }),
-  ]);
+  ], staying);
   assert.match(prompt, /clicked Regenerate/);
   assert.match(prompt, /refus/i);
 });
@@ -116,4 +121,25 @@ test('parseReply caps message and note length', () => {
 
 test('parseReply drops the note unless the rating is down', () => {
   assert.equal(parseReply('{"message":"thx","rating":"up","note":"Great"}').note, '');
+});
+
+test('validateTranscript keeps a valid topic index and zeroes a bad one', () => {
+  const result = validateTranscript([asker('a', { topicIndex: 3 }), asker('b', { topicIndex: -1 }), asker('c', { topicIndex: 'x' })]);
+  assert.deepEqual(result.value.map((entry) => entry.topicIndex), [3, 0, 0]);
+});
+
+test('buildPrompt tells the user to stay or to change subject', () => {
+  const transcript = [asker('how many tsp in a cup'), human('36', { latencyMs: 1000, attempt: 1 })];
+  const stay = buildPrompt(transcript, staying);
+  assert.match(stay, /Stay on the current subject/);
+  assert.doesNotMatch(stay, /new subject/);
+  const move = buildPrompt(transcript, switching);
+  assert.match(move, /lost interest/);
+  assert.match(move, /new subject: a squeaky door/);
+  assert.match(move, /Who you are this session: a pub-quiz obsessive\./);
+});
+
+test('the system prompt no longer lists example subjects for the model to latch onto', async () => {
+  const { SYSTEM_PROMPT } = await import('../src/persona.js');
+  assert.doesNotMatch(SYSTEM_PROMPT, /regex|tax rules|recipes|quantum/i);
 });

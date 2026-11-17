@@ -56,6 +56,8 @@ function newState() {
     // token guards against a slow reply landing in a session that was since reset.
     token: Symbol('session'),
     id: `0x${Math.floor(Math.random() * 256).toString(16).toUpperCase().padStart(2, '0')}`,
+    // Drives the server's choice of persona and topic order for this session.
+    seed: crypto.getRandomValues(new Uint32Array(1))[0],
     transcript: [],
     waiting: false,
     error: null,
@@ -179,12 +181,12 @@ function applyFeedback(transcript, reply) {
   return [...transcript.slice(0, lastIndex), judged];
 }
 
-async function fetchTurn(transcript) {
+async function fetchTurn(transcript, seed) {
   const res = await fetch('/api/turn', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     // The user only remembers recent history; this also keeps long sessions under the server's cap.
-    body: JSON.stringify({ transcript: transcript.slice(-MAX_ENTRIES_SENT) }),
+    body: JSON.stringify({ seed, transcript: transcript.slice(-MAX_ENTRIES_SENT) }),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `Request failed (${res.status}).`);
@@ -197,14 +199,20 @@ async function requestTurn() {
   render();
   const askedAt = Date.now();
   try {
-    const reply = await fetchTurn(state.transcript);
+    const reply = await fetchTurn(state.transcript, state.seed);
     if (state.token !== token) return;
     state = {
       ...state,
       waiting: false,
       transcript: [
         ...applyFeedback(state.transcript, reply),
-        { role: 'asker', text: reply.message, action: reply.action, composedMs: Date.now() - askedAt },
+        {
+          role: 'asker',
+          text: reply.message,
+          action: reply.action,
+          topicIndex: reply.topicIndex,
+          composedMs: Date.now() - askedAt,
+        },
       ],
       promptAt: Date.now(),
       attempt: reply.action === 'regenerate' ? state.attempt + 1 : 1,
