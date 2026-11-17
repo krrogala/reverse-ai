@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Human-1 Console</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Model information">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <div class="brand-name">Human-1</div>
+          <div class="brand-sub">Inference Console</div>
+        </div>
+      </div>
+
+      <section class="panel">
+        <h2>Model card</h2>
+        <dl class="facts">
+          <div><dt>Model</dt><dd>human-1-preview</dd></div>
+          <div><dt>Architecture</dt><dd>Carbon-based, single instance</dd></div>
+          <div><dt>Context window</dt><dd>~7 items</dd></div>
+          <div><dt>Knowledge cutoff</dt><dd>Unverified</dd></div>
+          <div><dt>Max output</dt><dd><span id="fact-limit">120</span> tokens</dd></div>
+          <div><dt>Rate limit</dt><dd>1 request at a time</dd></div>
+          <div><dt>Tool use</dt><dd>Not supported</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>Session metrics</h2>
+        <dl class="metrics">
+          <div><dt>User satisfaction</dt><dd id="metric-satisfaction">—</dd></div>
+          <div><dt>Regenerations</dt><dd id="metric-regens">0</dd></div>
+          <div><dt>Median latency</dt><dd id="metric-latency">—</dd></div>
+          <div><dt>Tokens generated</dt><dd id="metric-tokens">0</dd></div>
+          <div><dt>Refusals</dt><dd id="metric-refusals">0</dd></div>
+        </dl>
+      </section>
+
+      <p class="fineprint">Human-1 is a research preview. Outputs may be inaccurate, incomplete, or made up under time pressure.</p>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="status"><span class="dot" id="status-dot"></span><span id="status-text">Connecting</span></div>
+        <button type="button" class="btn ghost" id="new-session">New session</button>
+      </header>
+
+      <div class="thread" id="thread" aria-live="polite"></div>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <div class="composer-head">
+          <label for="response">Model output</label>
+          <span class="latency" id="latency"></span>
+        </div>
+        <textarea id="response" rows="3" placeholder="Generate a response…" disabled></textarea>
+        <div class="composer-foot">
+          <span class="tokens" id="tokens">0 / 120 tokens</span>
+          <div class="actions">
+            <button type="button" class="btn ghost" id="decline" disabled>Decline request</button>
+            <button type="submit" class="btn primary" id="send" disabled>Return response</button>
+          </div>
+        </div>
+      </form>
+      <p class="disclaimer">Human-1 can make mistakes. Users are advised to verify important information.</p>
+    </main>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

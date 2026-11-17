@@ -1,0 +1,19 @@
+{
+  "name": "reverse-ai",
+  "version": "0.1.0",
+  "description": "Human-1: an enterprise-grade assistant where the model is you.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/krrogala/reverse-ai.git"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test --experimental-test-coverage \"test/*.test.js\""
+  }
+}

@@ -1,0 +1,7 @@
+node_modules/
+*.zip
+*.log
+.env
+.env.*
+.claude/
+.DS_Store
