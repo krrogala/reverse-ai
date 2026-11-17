@@ -12,6 +12,8 @@ if (mode === 'hang') {
   process.exit(3);
 } else if (mode === 'auth') {
   process.stdout.write(JSON.stringify({ is_error: true, result: 'Failed to authenticate: run `claude auth login`' }));
+} else if (mode === 'loggedout') {
+  process.stdout.write(JSON.stringify({ is_error: true, result: 'Not logged in · Please run /login' }));
 } else if (mode === 'error') {
   process.stdout.write(JSON.stringify({ is_error: true, result: 'overloaded' }));
 } else {

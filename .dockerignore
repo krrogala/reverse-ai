@@ -1,0 +1,14 @@
+.git
+.gitignore
+.claude
+.env
+.env.*
+!.env.example
+node_modules
+test
+docs
+*.zip
+*.log
+Dockerfile
+compose.yaml
+README.md

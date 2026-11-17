@@ -1,40 +1,74 @@
-// HTTP server: serves the console UI and relays each turn to `claude -p`.
+// HTTP server: serves the console UI and relays each turn to the model playing the "user".
 
 import { createServer } from 'node:http';
+import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
-import { ClaudeError, runClaude } from './claude.js';
+import { extname, join, relative, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { UpstreamError } from './errors.js';
 import { SYSTEM_PROMPT, TOKEN_LIMIT, buildPrompt, parseReply, validateTranscript } from './persona.js';
+import { createProvider } from './providers/index.js';
 
-const PUBLIC_DIR = new URL('../public/', import.meta.url);
-const STATIC_FILES = {
-  '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
-  '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
-  '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
+const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
+const CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.woff2': 'font/woff2',
 };
+const FONT_CACHE = 'public, max-age=31536000, immutable';
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_CONCURRENT_TURNS = 2;
 const DEFAULT_PORT = 4517;
-const HOST = '127.0.0.1';
+const DEFAULT_HOST = '127.0.0.1';
 
 const UPSTREAM_HINTS = {
   not_installed: 'The claude CLI was not found. Install Claude Code, or set CLAUDE_BIN.',
-  not_signed_in: 'The claude CLI is not signed in. Run "claude auth login" in a terminal, then retry.',
+  not_signed_in: 'The claude CLI is not signed in. Run "claude auth login", or set CLAUDE_CODE_OAUTH_TOKEN in a container, then retry.',
+  bad_key: "The API key for the user's model was rejected. Check the server's environment.",
+  rate_limited: 'The user is being rate limited. Retry in a moment.',
+  refused: 'The user declined to continue. Retry.',
   timeout: 'The user took too long to type. Retry.',
   failed: 'The user could not be reached. Retry.',
 };
 
 /**
- * Only the local console may talk to this server. Checking Host defeats DNS
- * rebinding (a hostile site re-resolving its own name to 127.0.0.1), and
+ * Maps URL paths to files that exist under public/ at startup. Requests are only
+ * ever looked up in this map, so no path from a request reaches the filesystem.
+ */
+function indexStaticFiles(dir = PUBLIC_DIR) {
+  const files = new Map();
+  for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+    const type = CONTENT_TYPES[extname(entry.name)];
+    if (!entry.isFile() || !type) continue;
+    const path = join(entry.parentPath, entry.name);
+    files.set(`/${relative(dir, path).split(sep).join('/')}`, { path, type });
+  }
+  if (files.has('/index.html')) files.set('/', files.get('/index.html'));
+  return files;
+}
+
+/** "a.example, b.example:8080" -> ["a.example", "b.example:8080"] */
+export function parseAllowedHosts(value) {
+  return (value ?? '')
+    .split(',')
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * Only the console itself may talk to this server. Checking Host defeats DNS
+ * rebinding (a hostile site re-resolving its own name to this machine), and
  * checking Origin rejects cross-site requests outright.
  */
-function isLocalRequest(req) {
+function isTrustedRequest(req, extraHosts) {
   const port = req.socket.localPort;
-  const allowedHosts = [`127.0.0.1:${port}`, `localhost:${port}`];
-  if (!allowedHosts.includes(req.headers.host ?? '')) return false;
+  const allowedHosts = [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`, ...extraHosts];
+  if (!allowedHosts.includes((req.headers.host ?? '').toLowerCase())) return false;
   const { origin } = req.headers;
-  return origin === undefined || allowedHosts.some((host) => origin === `http://${host}`);
+  if (origin === undefined) return true;
+  return allowedHosts.some((host) => origin === `http://${host}` || origin === `https://${host}`);
 }
 
 function sendJson(res, status, body) {
@@ -53,30 +87,31 @@ async function readJsonBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-async function serveStatic(res, entry) {
-  const body = await readFile(new URL(entry.file, PUBLIC_DIR));
+async function serveStatic(res, file) {
+  const body = await readFile(file.path);
   res.writeHead(200, {
-    'content-type': entry.type,
-    'cache-control': 'no-store',
+    'content-type': file.type,
+    'cache-control': file.type === CONTENT_TYPES['.woff2'] ? FONT_CACHE : 'no-store',
     'x-content-type-options': 'nosniff',
-    'content-security-policy': "default-src 'self'; frame-ancestors 'none'",
+    'referrer-policy': 'no-referrer',
+    'content-security-policy': "default-src 'self'; frame-ancestors 'none'; base-uri 'none'",
   });
   res.end(body);
 }
 
 /**
- * @param {{ askClaude?: (prompt: string, system: string) => Promise<string>, log?: (line: string) => void }} [deps]
+ * @param {{
+ *   provider?: { name: string, model: string, ask: (prompt: string, system: string) => Promise<string> },
+ *   allowedHosts?: string[],
+ *   log?: (line: string) => void,
+ * }} [deps]
  */
-export function createApp({ askClaude, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
-  const ask =
-    askClaude ??
-    ((prompt, system) =>
-      runClaude({
-        prompt,
-        system,
-        bin: process.env.CLAUDE_BIN || 'claude',
-        model: process.env.REVERSE_AI_MODEL || 'sonnet',
-      }));
+export function createApp({
+  provider = createProvider(process.env),
+  allowedHosts = parseAllowedHosts(process.env.REVERSE_AI_ALLOWED_HOSTS),
+  log = (line) => process.stderr.write(`${line}\n`),
+} = {}) {
+  const staticFiles = indexStaticFiles();
   let turnsInFlight = 0;
 
   async function handleTurn(req, res) {
@@ -108,29 +143,29 @@ export function createApp({ askClaude, log = (line) => process.stderr.write(`${l
     if (!transcript.ok) return sendJson(res, 400, { error: transcript.error });
 
     try {
-      const raw = await ask(buildPrompt(transcript.value), SYSTEM_PROMPT);
+      const raw = await provider.ask(buildPrompt(transcript.value), SYSTEM_PROMPT);
       const reply = parseReply(raw);
-      // There is nothing to rate or regenerate before the first response.
       if (transcript.value.length > 0) return sendJson(res, 200, reply);
+      // There is nothing to rate or regenerate before the first response.
       if (reply.message === '') throw new Error('The user opened the session without a prompt.');
       return sendJson(res, 200, { ...reply, rating: null, note: '', action: 'continue' });
     } catch (error) {
-      const kind = error instanceof ClaudeError ? error.kind : 'failed';
-      log(`turn failed (${kind}): ${error instanceof Error ? error.message : String(error)}`);
+      const kind = error instanceof UpstreamError ? error.kind : 'failed';
+      log(`turn failed (${provider.name}, ${kind}): ${error instanceof Error ? error.message : String(error)}`);
       return sendJson(res, 502, { error: UPSTREAM_HINTS[kind] });
     }
   }
 
   return createServer(async (req, res) => {
     try {
-      if (!isLocalRequest(req)) return sendJson(res, 403, { error: 'Forbidden.' });
+      if (!isTrustedRequest(req, allowedHosts)) return sendJson(res, 403, { error: 'Forbidden.' });
       const { pathname } = new URL(req.url ?? '/', 'http://localhost');
       if (req.method === 'POST' && pathname === '/api/turn') return await handleTurn(req, res);
       if (req.method === 'GET' && pathname === '/api/config') {
-        return sendJson(res, 200, { tokenLimit: TOKEN_LIMIT });
+        return sendJson(res, 200, { tokenLimit: TOKEN_LIMIT, provider: provider.name, model: provider.model });
       }
-      if (req.method === 'GET' && Object.hasOwn(STATIC_FILES, pathname)) {
-        return await serveStatic(res, STATIC_FILES[pathname]);
+      if (req.method === 'GET' && staticFiles.has(pathname)) {
+        return await serveStatic(res, staticFiles.get(pathname));
       }
       return sendJson(res, 404, { error: 'Not found.' });
     } catch (error) {
@@ -141,10 +176,21 @@ export function createApp({ askClaude, log = (line) => process.stderr.write(`${l
   });
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) {
+function main() {
   const port = Number.parseInt(process.env.PORT ?? '', 10) || DEFAULT_PORT;
-  createApp().listen(port, HOST, () => {
-    process.stderr.write(`Human-1 console: http://${HOST}:${port}\n`);
+  const host = process.env.HOST || DEFAULT_HOST;
+  let app;
+  try {
+    app = createApp();
+  } catch (error) {
+    // Configuration problems (unknown provider, missing key) should read as one clear line.
+    process.stderr.write(`Human-1 cannot start: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  }
+  app.listen(port, host, () => {
+    process.stderr.write(`Human-1 console: http://${host}:${port}\n`);
   });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => app.close(() => process.exit(0)));
 }
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

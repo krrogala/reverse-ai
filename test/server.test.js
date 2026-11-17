@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
-import { ClaudeError } from '../src/claude.js';
-import { createApp } from '../src/server.js';
+import { UpstreamError } from '../src/errors.js';
+import { createApp, parseAllowedHosts } from '../src/server.js';
 
-async function withApp(deps, fn) {
-  const server = createApp({ log: () => {}, ...deps });
+async function withApp({ askClaude = async () => '{"message":"q"}', ...deps }, fn) {
+  const provider = { name: 'fake', model: 'fake-1', ask: askClaude };
+  const server = createApp({ log: () => {}, provider, allowedHosts: [], ...deps });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
@@ -22,7 +23,7 @@ const reply = (fields) => async () => JSON.stringify({ message: 'q', rating: nul
 
 test('serves the console and its assets', async () => {
   await withApp({}, async (base) => {
-    for (const path of ['/', '/styles.css', '/app.js']) {
+    for (const path of ['/', '/styles.css', '/app.js', '/render.js', '/fonts/fonts.css', '/fonts/inter-normal.woff2']) {
       const res = await fetch(base + path);
       assert.equal(res.status, 200, path);
     }
@@ -59,10 +60,12 @@ test('refuses requests that are not from the local console', async () => {
   });
 });
 
-test('exposes the token limit', async () => {
+test('exposes the token limit and which model plays the user', async () => {
   await withApp({}, async (base) => {
     const config = await (await fetch(`${base}/api/config`)).json();
     assert.equal(typeof config.tokenLimit, 'number');
+    assert.equal(config.provider, 'fake');
+    assert.equal(config.model, 'fake-1');
   });
 });
 
@@ -109,7 +112,7 @@ test('rejects invalid input', async () => {
 
 test('maps Claude failures to a 502 with a hint and no internals', async () => {
   const askClaude = async () => {
-    throw new ClaudeError('Failed to authenticate: secret detail', 'not_signed_in');
+    throw new UpstreamError('Failed to authenticate: secret detail', 'not_signed_in');
   };
   await withApp({ askClaude }, async (base) => {
     const res = await postTurn(base, { transcript: [] });
@@ -143,4 +146,52 @@ test('limits concurrent turns', async () => {
     assert.equal((await first).status, 200);
     assert.equal((await second).status, 200);
   });
+});
+
+const rawGet = (base, host) =>
+  new Promise((resolve, reject) => {
+    const req = request(`${base}/api/config`, { headers: { host } }, (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+
+test('accepts extra hosts when deployed behind a name', async () => {
+  await withApp({ allowedHosts: parseAllowedHosts(' Human1.example.com , box:8080,') }, async (base) => {
+    assert.equal(await rawGet(base, 'human1.example.com'), 200);
+    assert.equal(await rawGet(base, 'box:8080'), 200);
+    assert.equal(await rawGet(base, 'other.example.com'), 403);
+    const viaTls = await new Promise((resolve, reject) => {
+      const headers = { host: 'human1.example.com', origin: 'https://human1.example.com', 'content-type': 'application/json' };
+      const req = request(`${base}/api/turn`, { method: 'POST', headers }, (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      });
+      req.on('error', reject);
+      req.end(JSON.stringify({ transcript: [] }));
+    });
+    assert.equal(viaTls, 200);
+  });
+});
+
+test('does not serve files outside the static index', async () => {
+  await withApp({}, async (base) => {
+    assert.equal((await fetch(`${base}/fonts/../../package.json`)).status, 404);
+    assert.equal((await fetch(`${base}/fonts/`)).status, 404);
+  });
+});
+
+test('maps each upstream failure kind to its own hint', async () => {
+  for (const [kind, pattern] of [['bad_key', /API key/], ['rate_limited', /rate limited/], ['refused', /declined/], ['timeout', /too long/]]) {
+    const askClaude = async () => {
+      throw new UpstreamError('internal detail', kind);
+    };
+    await withApp({ askClaude }, async (base) => {
+      const res = await postTurn(base, { transcript: [] });
+      assert.equal(res.status, 502);
+      assert.match((await res.json()).error, pattern);
+    });
+  }
 });
