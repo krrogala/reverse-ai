@@ -4,21 +4,10 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { UpstreamError } from './errors.js';
 
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_OUTPUT_CHARS = 1_000_000;
-
-export class ClaudeError extends Error {
-  /**
-   * @param {string} message
-   * @param {'not_installed' | 'not_signed_in' | 'timeout' | 'failed'} kind
-   */
-  constructor(message, kind) {
-    super(message);
-    this.name = 'ClaudeError';
-    this.kind = kind;
-  }
-}
 
 let privateCwd = null;
 
@@ -50,12 +39,12 @@ function readResult(stdout, exitCode, stderr) {
     envelope = JSON.parse(stdout);
   } catch {
     const detail = stderr.trim().slice(0, 300) || `exit code ${exitCode}`;
-    throw new ClaudeError(`claude returned no usable output (${detail})`, 'failed');
+    throw new UpstreamError(`claude returned no usable output (${detail})`, 'failed');
   }
   const result = typeof envelope.result === 'string' ? envelope.result : '';
   if (envelope.is_error) {
-    const kind = /authenticate|auth login|sign in/i.test(result) ? 'not_signed_in' : 'failed';
-    throw new ClaudeError(result || 'claude reported an error', kind);
+    const kind = /authenticate|auth login|sign in|not logged in|\/login/i.test(result) ? 'not_signed_in' : 'failed';
+    throw new UpstreamError(result || 'claude reported an error', kind);
   }
   return result;
 }
@@ -85,7 +74,7 @@ export function runClaude({ prompt, system, bin = 'claude', model = 'sonnet', ti
 
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      settle(reject, new ClaudeError(`claude did not answer within ${timeoutMs / 1000}s`, 'timeout'));
+      settle(reject, new UpstreamError(`claude did not answer within ${timeoutMs / 1000}s`, 'timeout'));
     }, timeoutMs);
 
     // Decode as a stream so a multibyte character split across chunks survives.
@@ -95,7 +84,7 @@ export function runClaude({ prompt, system, bin = 'claude', model = 'sonnet', ti
       stdout += chunk;
       if (stdout.length > MAX_OUTPUT_CHARS) {
         child.kill('SIGKILL');
-        settle(reject, new ClaudeError('claude produced too much output', 'failed'));
+        settle(reject, new UpstreamError('claude produced too much output', 'failed'));
       }
     });
     child.stderr.on('data', (chunk) => {
@@ -105,7 +94,7 @@ export function runClaude({ prompt, system, bin = 'claude', model = 'sonnet', ti
     child.on('error', (error) => {
       const missing = error.code === 'ENOENT';
       const message = missing ? `could not find the "${bin}" command` : `could not start claude: ${error.message}`;
-      settle(reject, new ClaudeError(message, missing ? 'not_installed' : 'failed'));
+      settle(reject, new UpstreamError(message, missing ? 'not_installed' : 'failed'));
     });
 
     child.on('close', (exitCode) => {

@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { ClaudeError, runClaude } from '../src/claude.js';
+import { runClaude } from '../src/claude.js';
+import { UpstreamError } from '../src/errors.js';
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-claude.mjs', import.meta.url));
 
@@ -16,7 +17,7 @@ async function withMode(mode, fn) {
   }
 }
 
-const expectKind = (kind) => (error) => error instanceof ClaudeError && error.kind === kind;
+const expectKind = (kind) => (error) => error instanceof UpstreamError && error.kind === kind;
 
 test('runClaude sends the prompt on stdin and locks the model down to text only', async () => {
   const raw = await withMode('ok', () => runClaude({ bin: FAKE, prompt: 'hello; rm -rf /', system: 'SYS', model: 'haiku' }));
@@ -35,6 +36,10 @@ test('runClaude reports a missing binary', async () => {
 
 test('runClaude reports an expired login', async () => {
   await assert.rejects(withMode('auth', () => runClaude({ bin: FAKE, prompt: 'x', system: 's' })), expectKind('not_signed_in'));
+});
+
+test('runClaude recognises the logged-out message a fresh container gives', async () => {
+  await assert.rejects(withMode('loggedout', () => runClaude({ bin: FAKE, prompt: 'x', system: 's' })), expectKind('not_signed_in'));
 });
 
 test('runClaude reports upstream errors', async () => {
