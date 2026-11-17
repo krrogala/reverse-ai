@@ -73,7 +73,7 @@ test('opening turn never carries a rating or regenerate', async () => {
   await withApp({ askClaude: reply({ message: 'fix my css', rating: 'down', note: 'Bad', action: 'regenerate' }) }, async (base) => {
     const res = await postTurn(base, { transcript: [] });
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { message: 'fix my css', rating: null, note: '', action: 'continue' });
+    assert.deepEqual(await res.json(), { message: 'fix my css', rating: null, note: '', action: 'continue', topicIndex: 0 });
   });
 });
 
@@ -91,11 +91,12 @@ test('later turns pass the transcript to Claude and relay its feedback', async (
   };
   await withApp({ askClaude }, async (base) => {
     const transcript = [
-      { role: 'asker', text: 'capital of peru' },
+      { role: 'asker', text: 'capital of peru', topicIndex: 0 },
       { role: 'human', text: 'Lima I think', latencyMs: 61000, attempt: 1 },
     ];
-    const res = await postTurn(base, { transcript });
-    assert.deepEqual(await res.json(), { message: '', rating: 'down', note: 'Too slow', action: 'regenerate' });
+    const res = await postTurn(base, { transcript, seed: 7 });
+    assert.deepEqual(await res.json(), { message: '', rating: 'down', note: 'Too slow', action: 'regenerate', topicIndex: 0 });
+    assert.match(seenPrompt, /Stay on the current subject/);
     assert.match(seenPrompt, /Lima I think/);
     assert.match(seenPrompt, /61s/);
   });
@@ -194,4 +195,36 @@ test('maps each upstream failure kind to its own hint', async () => {
       assert.match((await res.json()).error, pattern);
     });
   }
+});
+
+test('after enough turns on one subject the user is told to move on and cannot regenerate', async () => {
+  const prompts = [];
+  const askClaude = async (prompt) => {
+    prompts.push(prompt);
+    return JSON.stringify({ message: 'new question', rating: 'down', note: 'Wrong', action: 'regenerate' });
+  };
+  await withApp({ askClaude }, async (base) => {
+    // Five user turns on topic 0 is past the maximum any topic is allowed.
+    const transcript = Array.from({ length: 5 }, () => [
+      { role: 'asker', text: 'tsp in 3/4 cup?', topicIndex: 0 },
+      { role: 'human', text: '36', latencyMs: 1000, attempt: 1 },
+    ]).flat();
+    const body = await (await postTurn(base, { transcript, seed: 1234 })).json();
+    assert.equal(body.topicIndex, 1);
+    assert.equal(body.action, 'continue');
+    assert.equal(body.rating, 'down');
+    assert.match(prompts[0], /lost interest/);
+  });
+});
+
+test('different seeds open different sessions; a bad seed is tolerated', async () => {
+  const prompts = [];
+  const askClaude = async (prompt) => {
+    prompts.push(prompt);
+    return JSON.stringify({ message: 'q' });
+  };
+  await withApp({ askClaude }, async (base) => {
+    for (const seed of [1, 2, 'nope']) assert.equal((await postTurn(base, { transcript: [], seed })).status, 200);
+    assert.notEqual(prompts[0], prompts[1]);
+  });
 });

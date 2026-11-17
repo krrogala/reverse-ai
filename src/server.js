@@ -5,6 +5,7 @@ import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { extname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { cleanSeed, planTurn } from './director.js';
 import { UpstreamError } from './errors.js';
 import { SYSTEM_PROMPT, TOKEN_LIMIT, buildPrompt, parseReply, validateTranscript } from './persona.js';
 import { createProvider } from './providers/index.js';
@@ -142,13 +143,18 @@ export function createApp({
     const transcript = validateTranscript(body?.transcript);
     if (!transcript.ok) return sendJson(res, 400, { error: transcript.error });
 
+    const plan = planTurn(transcript.value, cleanSeed(body?.seed));
     try {
-      const raw = await provider.ask(buildPrompt(transcript.value), SYSTEM_PROMPT);
-      const reply = parseReply(raw);
-      if (transcript.value.length > 0) return sendJson(res, 200, reply);
-      // There is nothing to rate or regenerate before the first response.
-      if (reply.message === '') throw new Error('The user opened the session without a prompt.');
-      return sendJson(res, 200, { ...reply, rating: null, note: '', action: 'continue' });
+      const raw = await provider.ask(buildPrompt(transcript.value, plan), SYSTEM_PROMPT);
+      const parsed = parseReply(raw);
+      // A subject change is a fresh prompt, so it cannot also be a Regenerate click.
+      const reply = plan.newTopic === null ? parsed : { ...parsed, action: 'continue' };
+      if (reply.message === '' && reply.action !== 'regenerate') {
+        throw new Error('The user sent an empty message.');
+      }
+      // There is nothing to rate before the first response.
+      const feedback = transcript.value.length === 0 ? { rating: null, note: '' } : {};
+      return sendJson(res, 200, { ...reply, ...feedback, topicIndex: plan.topicIndex });
     } catch (error) {
       const kind = error instanceof UpstreamError ? error.kind : 'failed';
       log(`turn failed (${provider.name}, ${kind}): ${error instanceof Error ? error.message : String(error)}`);
